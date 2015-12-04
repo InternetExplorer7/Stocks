@@ -1,0 +1,28 @@
+{
+  "name": "StocksPennApps",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "async": "^1.4.2",
+    "body-parser": "^1.13.3",
+    "cfenv": "^1.0.0",
+    "consolidate": "^0.13.1",
+    "csv": "^0.4.6",
+    "csv-parse": "^1.0.0",
+    "express": "^4.13.3",
+    "fast-csv": "^0.6.0",
+    "fs": "0.0.2",
+    "machine_learning": "0.0.8",
+    "mongodb": "^2.0.42",
+    "node-wit": "^2.0.0",
+    "path": "^0.11.14",
+    "request": "^2.61.0",
+    "twilio": "^2.3.0"
+  }
+}
