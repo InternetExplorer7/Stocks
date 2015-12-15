@@ -1,26 +1,10 @@
-/* 
-BUILT AT PENNAPPS XII -- KAVEH KHORRAM
-
-WORK-IN-PROGRESS
-
-*/
 var express = require('express');
 var app = express();
 var path = require('path');
 var mongoose = require('mongoose');
 mongoose.connect("mongodb://localhost:27017/db");
-var Schema = mongoose.Schema;
-
-// Create the Schema
-var contactSchema = new Schema({
-        _id: String,
-        stocks: [{
-                type: String
-        }]
-});
-
-// create the model
-var contact = mongoose.model('contacts', contactSchema);
+var echo = require('./echo'); // Load ECHO
+var sms = require('./sms'); // load SMS
 
 // cfenv provides access to your Cloud Foundry environment
 // for more info, see: https://www.npmjs.com/package/cfenv
@@ -29,10 +13,17 @@ var cfenv = require('cfenv');
 var appEnv = cfenv.getAppEnv();
 var bodyParser = require('body-parser');
 var MongoClient = require('mongodb').MongoClient;
+var Promise = require('bluebird');
+
+
+
+// new modules
+var contact = require('./models/user'); // import db
 var request = require('request');
 var wit = require('./wit');
 var alchemy = require('./alchemy');
 var sendmessage = require('./sendmsg');
+var bhttp = require('bhttp');
 
 // parse application/x-www-form-urlencoded
 app.use(bodyParser.urlencoded({
@@ -44,168 +35,135 @@ app.use(bodyParser.json())
 app.get('/starting', function(req, res) {
         res.sendFile(path.join(__dirname, 'starting/index.html'));
 });
-app.post('/sms', function(req, res) { // User sent text message, start process...
-        addNewUser(req.body.From, function(newuser) {
-                if (newuser) {
-                        console.log("New user");
-                        res.send("<Response> <Message>Thanks for texting in, try asking me about stock data for a particular company. To see what else I can do, visit: http://pennapps.mybluemix.net/starting </Message> </Response>");
-                        return; // Give message, restart.
-                } else { // Current user
-                        alchemy(req.body.Body, req.body.From, function(result, response) { // Response is array of companies, result === true when companies are found.
-                                wit(req.body.Body, function(entities) {
-                                        console.log("AlchemyArray in index: " + response);
-                                        if (entities.yearhigh && result || entities.yearlow && result || entities.volume && result || entities.EBITDA && result || entities.change && result) { // Alchemy found companies and user asked for year high results.
-                                                console.log("Hitting differences");
-                                                var payload = [];
-                                                payload.push(Object.keys(entities)[0]); // Year high
-                                                payload.push(Object.keys(entities)[1]); // Year Low
-                                                payload.push(Object.keys(entities)[2]); // Volume
-                                                payload.push(Object.keys(entities)[3]); // EBITDA
-                                                payload.push(Object.keys(entities)[4]); // Change
-                                                payload = payload.filter(function(item) {
-                                                        return item
-                                                }); // clears out array of undefined items
-                                                getticker(response, req.body.From, payload);
-                                        } else if (result) { // Just alchemy return true, ex: Yahoo!, Google and Apple.
-                                                console.log("Hitting res");
-                                                getticker(response, req.body.From);
-                                        } else if (entities.stocksearch) { // Just Wit returned true, ex: Show me my stocks
-                                                console.log(entities.stocksearch);
-                                                getone(req.body.From, function(contact) {
-                                                        if (contact.stocks.length > 0) {
-                                                                contact.stocks.forEach(function(ticker) {
-                                                                        getstocks(ticker, req.body.From);
-                                                                });
-                                                        } else {
-                                                                sendmessage(req.body.From, "You haven't saved any companies yet!!");
-                                                        }
-                                                });
-                                        } else {
-                                                console.log('Bad request ' + req.body.Body);
-                                                sendmessage(req.body.From, "Sorry, I didn't quite understand your request. Click here to see what I can understand: http://pennapps.mybluemix.net/starting");
-                                        }
-                                });
+
+app.post('/api/echo', function(req, res) {
+        var uid;
+        var body;
+        var newUserEntered = false;
+        var sms = false;
+        if (req.body.From) { // If req.body.From is a valid field, message is from SMS.
+                sms = true;
+                uid = req.body.From;
+                body = req.body.Body;
+        } else {
+                uid = req.body.session.user.userId;
+                body = req.body.request.intent.slots.query.value;
+        }
+        /*
+        POSSIBLE RESPONSE:
+        Case #1: Show me my stocks - COMPLETED
+        Case #2: What are stocks like for Google and Amazon -- COMPLETED
+        Case #3: unrecognized command, throw error. -- COMPLETED
+        */
+        contact.findOne({
+                _id: uid
+        }).then(function(user) {
+                if (!user) { // user not found, create new account.
+                        var newUser = new contact({
+                                _id: uid,
+                                stocks: []
                         });
+                        return newUser.save().then(function(err) {
+                                        newUserEntered = true;
+                                        checkSend("Welcome to my stocks, try asking me about stocks for any company!", true)
+                                })
+                                // New user, send back welcome message. Code should stop running after this session.
                 }
         });
-});
 
-function getticker(stocks, sender, payload) {
-        // Turn company names into stock tickers
-        console.log("Stocks array, companies found: " + JSON.stringify(stocks));
-        stocks.forEach(function(ticker) {
-                request("http://dev.markitondemand.com/MODApis/Api/v2/Lookup/json?input=" + ticker, function(error, response, body) {
-                        console.log("Response for " + ticker + " " + JSON.stringify(response));
-                        if (error) throw error;
-                        // body = body.substring(39); OLD YAHOO STUFF
-                        // body = body.substring(0, body.length - 1);
-                        // body = JSON.parse(body);
-                        body = JSON.parse(body);
-                        //console.log(body);
-                        if (body.length === 0) {
-                                //sendmessage(sender, "Sorry, I couldn't find information about " + ticker);
+
+        alchemy(body, uid, function(result, response) { // Response is array of companies, result === true when companies are found.
+                wit(body, function(entities) {
+
+                        if (newUserEntered) {
                                 return;
                         }
-                        if (body[0].Symbol === "VXGOG") {
-                                body[0].Symbol = "GOOGL";
-                        }               
-                        console.log("Got ticker, adding " + body[0].Symbol + " to DB");
-                        addToDB(sender, body[0].Symbol); // Adds new ticker to DB
-                        console.log("Getting stock data, using " + body[0].Symbol);
-                        getstocks(body[0].Symbol, sender, payload);
+
+                        if (!result && Object.keys(entities).length === 1 && entities.stocksearch) { // No companies found, only item from Wit was 'stocksearch'
+                                // Case #1: Show me my stocks
+                                echo.showSavedStocks(uid, function(responsePayload) {
+                                        checkSend(responsePayload);
+                                });
+                        } else if (result && Object.keys(entities).length > 0) { // Companies were found and obj was returned by Wit, 'year low' 'year high'
+                                // Case #2: What are stocks ike for Google and Amazon year high and EBITDA
+                                Promise.map(Object.keys(entities), function(specialEntity) {
+                                        if (specialEntity !== "stocksearch") {
+                                                return specialEntity // Start transforming array, just make sure that 'stocksearch' isn't included.
+                                        }
+                                }).then(function(response) {
+                                        return response.filter(function(item) { // Check for any undefined items inside the array, e.g. 'stocksearch'
+                                                if (item === undefined) {
+                                                        return false; // Found, probably stocksearch
+                                                } else {
+                                                        return true;
+                                                }
+                                        });
+                                }).then(function(newArr) {
+                                        if (newArr.length < 1) {
+                                                echo.addStocks(uid, response, undefined, function(responsePayload) {
+                                                        checkSend(responsePayload);
+                                                }); // If their is nothing inside of newArr, just return undefiend.
+                                        } else {
+                                                echo.addStocks(uid, response, newArr, function(responsePayload) {
+                                                        checkSend(responsePayload);
+                                                }); // newArr is special requests by Wit
+
+                                        }
+
+                                });
+                        } else if (result) { // Nothing by Wit, just an array of Companies by AlchemyAPI
+                                echo.addStocks(uid, response, undefined, function(responsePayload) {
+                                        checkSend(responsePayload);
+                                });
+                                // Case #2 ext: Google Amazon
+
+                        } else { // Nothing by Wit or AlchemyAPI
+                                checkSend("Sorry, I didn't quite understand your request.")
+                                        // Case #3: unrecognized command.
+                        } // Else
+                }); // Wit
+        }); // Alchemy
+
+        function checkSend(text, single) {
+                if (sms) { // If SMS = true, send it to sendToSMS
+                        sendToSMS(text);
+                } else { // If SMS = false, send it to sendToEcho
+                        if (!single) {
+                                text = text.join(' ');
+                        }
+                        sendToEcho(text);
+                }
+        }
+
+        function sendToEcho(text) {
+                var responseBody = {
+                        "version": "0.1",
+                        "response": {
+                                "outputSpeech": {
+                                        "type": "PlainText",
+                                        "text": text
+                                },
+                                "shouldEndSession": true // Set to false to keep going
+                        }
+                }
+                res.send(responseBody);
+        }
+
+        function sendToSMS(text) {
+                if (typeof text === "string" || text.length === 0) {
+                        sendmessage(uid, text);
+                        return;
+                }
+                text.forEach(function(item) {
+                        if (item[0].length > 1) {
+                                item.forEach(function(extItem) {
+                                        sendmessage(uid, extItem);
+                                });
+                        } else {
+                                sendmessage(uid, item);
+                        }
                 });
-        });
-}
-
-function getstocks(ticker, sender, payload) { // We have the ticker and saved to DB, start sending stock data now
-        request({
-                url: "https://query.yahooapis.com/v1/public/yql?q=select%20*%20from%20yahoo.finance.quotes%20where%20symbol%20in%20(%22" + ticker + "%22)&format=json&diagnostics=true&env=store%3A%2F%2Fdatatables.org%2Falltableswithkeys&callback=",
-                rejectUnauthorized: false,
-                headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; Trident/7.0; rv:11.0) like Gecko'
-                }
-        }, function(error, response, body) {
-                if (error) throw error;
-                console.log("TICKER: " + ticker);
-                body = JSON.parse(body);
-                var name;
-                if (body.query.results.quote.Name !== null) {
-                        name = body.query.results.quote.Name;
-                } else {
-                        name = body.query.results.quote.Symbol
-                }
-                if (payload) { // Special requests spotted
-                        console.log("Special requests spotted");
-                        payload.forEach(function(item) {
-                                console.log(item);
-                                switch (item) {
-                                        case "yearhigh":
-                                                sendmessage(sender, name + " had a year high of " + body.query.results.quote.YearHigh);
-                                                break;
-                                        case "yearlow":
-                                                sendmessage(sender, name + " had a year low of " + body.query.results.quote.YearLow);
-                                                break;
-                                        case "volume":
-                                                sendmessage(sender, name + " volume: " + body.query.results.quote.Volume);
-                                                break;
-                                        case "EBITDA":
-                                                sendmessage(sender, "Earnings Before Interest, Taxes, Depreciation, and Amortization for " + name + " is " + body.query.results.quote.EBITDA);
-                                                break;
-                                        case "change":
-                                                sendmessage(sender, name + " had a change of " + body.query.results.quote.PercentChange);
-                                                break;
-                                        default:
-                                                console.log("Hit default, most likely stocksearch " + item);
-                                                break;
-                                }
-                        });
-                } else {
-                        sendmessage(sender, name + " Opened at " + body.query.results.quote.Open + " Peaked at " + body.query.results.quote.DaysHigh + " with a Low of " + body.query.results.quote.DaysLow + " and a percent change of " + body.query.results.quote.PercentChange + ". Last trade date: " + body.query.results.quote.LastTradeDate);
-                }
-        });
-}
-
-function addToDB(tel, ticker) { // phone number, ticker to add.
-        contact.findOne({
-                _id: tel
-        }, function(err, res) { // Found object
-                if (res.stocks.indexOf(ticker) === -1) { // Ticker not found
-                        res.update({
-                                $push: {
-                                        stocks: ticker
-                                }
-                        }, function (err) {
-                                if (err) console.log(err);
-                        });
-                }
-        });
-}
-
-function getone(tel, callback) { // phone number, callback
-        contact.findOne({
-                _id: tel
-        }, function(err, res) {
-                callback(res);
-        });
-}
-
-function addNewUser(tel, callback) { // phone number, callback
-        contact.findOne({
-                _id: tel
-        }, function(err, res) {
-                if (!res) { // User is not found, create a new contact
-                        var newContact = new contact({
-                                _id: phone,
-                                stocks: []
-                        })
-                        newContact.save(function(err) {
-                                if (err) console.log(err);
-                        });
-                        callback(true); // New User
-                } else {
-                        callback(false); // Current user
-                }
-        });
-}
+        }
+});
 
 app.listen(appEnv.port); // Change this back when going back to Bluemix

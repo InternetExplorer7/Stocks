@@ -10,6 +10,8 @@
   "license": "ISC",
   "dependencies": {
     "async": "^1.4.2",
+    "bhttp": "^1.2.1",
+    "bluebird": "^3.0.6",
     "body-parser": "^1.13.3",
     "cfenv": "^1.0.0",
     "consolidate": "^0.13.1",
@@ -22,6 +24,7 @@
     "mongodb": "^2.0.42",
     "node-wit": "^2.0.0",
     "path": "^0.11.14",
+    "promise": "^7.0.4",
     "request": "^2.61.0",
     "twilio": "^2.3.0"
   }
